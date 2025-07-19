@@ -62,12 +62,12 @@ Precompiled bundles for different Arch, OS, CUDA versions, and Token and Tensor 
 
 Token services for agentic AI workflows can embedded in the application using `candle` or accessed locally e.g., self-hosted NVIDIA NIMs docker containers or remotely e.g., OpenAI, NVIDIA NIMs, etc. that adhere to the OpenAI API schema using `openai_api`. Tensor services are embedded in the application using `candle` with CPU vectorization and GPU acceleration support.
 
-To install the phymes application, download the precompiled bundle that matches your system and needs, and unzip the bundle. Double click on `phymes-server` to start the server, then navigate to http://127.0.0.1:4000/ to view the web application. 
+To install the phymes application, download the precompiled bundle that matches your system and needs, and unzip the bundle. Double click on `phymes-server` to start the server. Navigate to http://127.0.0.1:4000/ to view the web application. 
 
 <!--- ANCHOR_END: installation1 --->
 
 <video controls>
-  <source src="./phymes-book/assets/2025-07-05_phymes-app_ui_1080p.mp4" type="video/mp4">
+  <source src="https://github.com/user-attachments/assets/4e695cd4-0293-4f93-9904-8ae8451595b0" type="video/mp4">
 </video>
 
 <!--- ANCHOR: installation2 --->
@@ -106,7 +106,7 @@ WASM builds of `phymes-server` can be ran as stateless functions for embedded ap
 <!--- ANCHOR_END: installation2 --->
 
 <video controls>
-  <source src="./phymes-book/assets/2025-07-05_phymes-app_server_1080p.mp4" type="video/mp4">
+  <source src="https://github.com/user-attachments/assets/81e93223-342d-4719-aded-f6f8bf4a3bc2" type="video/mp4">
 </video>
 
 <!--- ANCHOR: installation3 --->
@@ -122,7 +122,7 @@ wastime phymes-server.wasm -- --route app/v1/sign_in --basic-auth EMAIL:PASSWORD
 wastime phymes-server.wasm curl -- --route app/v1/chat --bearer-auth JWTTOKEN --data '{"content": "Write a python function to count prime numbers", "session_name": "EMAILChat", "subject_name": "messages"}'
 ```
 
-See [contributing] guide for detailed installation and build instructions.
+The phymes application is available for desktop (Linux, Windows, MacOS) and mobile (Android, iOS), but requires building from source on the target platform (i.e., Linux for Linux desktop, Windows for Windows desktop, MacOS for MacOS desktop, Linux for Android, and MacOS for iOS). See [contributing] guide for detailed installation and build instructions.
 
 [releases]: https://github.com/biom8er/phymes/releases
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
