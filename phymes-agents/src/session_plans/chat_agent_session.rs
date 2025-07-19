@@ -111,6 +111,7 @@ impl AgentSessionBuilderTrait for ChatAgentSession<'_> {
 
     fn make_state_tables(&self) -> Result<Vec<ArrowTable>> {
         // Default chat config
+        #[allow(unused_mut)]
         let mut candle_chat_config = CandleChatConfig {
             max_tokens: 1000,
             temperature: 0.8,
@@ -194,25 +195,202 @@ impl AgentSessionBuilderTrait for ChatAgentSession<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+pub mod test_chat_agent_session {
     use futures::TryStreamExt;
-    use parking_lot::RwLock;
+    use parking_lot::{Mutex, RwLock};
     use phymes_core::{
         metrics::HashMap,
         session::{
-            common_traits::MappableTrait,
+            common_traits::{BuildableTrait, MappableTrait},
             session_context::{SessionStream, SessionStreamState},
         },
-        table::{arrow_table::ArrowTableTrait, arrow_table_publish::ArrowTablePublish},
+        table::arrow_table::ArrowTableTrait,
         task::arrow_message::{
             ArrowIncomingMessage, ArrowIncomingMessageBuilder, ArrowIncomingMessageBuilderTrait,
-            ArrowIncomingMessageTrait, ArrowMessageBuilderTrait,
+            ArrowMessageBuilderTrait, ArrowOutgoingMessage, ArrowOutgoingMessageBuilderTrait,
+            ArrowOutgoingMessageTrait,
         },
     };
 
     use super::*;
+
     use crate::candle_chat::message_history::MessageHistoryBuilderTraitExt;
+    #[allow(unused_imports)]
+    #[cfg(feature = "openai_api")]
+    use crate::openai_asset::chat_processor::OpenAIChatProcessor;
+
+    /// Run the chat processor with a given config and return the message history
+    pub async fn bench_chat_processor(
+        metrics: ArrowTaskMetricsSet,
+        config: &CandleChatConfig,
+        user_content: &str,
+    ) -> Result<ArrowTable> {
+        // Named variables
+        let name = "CandleChatProcessor";
+        let messages = "messages";
+
+        // State for the chat processor config
+        let candle_chat_config_json = serde_json::to_vec(config)?;
+        let candle_chat_config_table = ArrowTableBuilder::new()
+            .with_name(name)
+            .with_json(&candle_chat_config_json, 1)?
+            .build()?;
+
+        // Make the system prompt and add the user query
+        let message_builder = ArrowTableBuilder::new()
+            .with_name(messages)
+            .insert_system_template_str("You are a helpful assistant.")?
+            .append_new_user_query_str(user_content, "user")?;
+
+        // Build the current message state
+        let mut message = HashMap::<String, ArrowOutgoingMessage>::new();
+        let _ = message.insert(
+            messages.to_string(),
+            ArrowOutgoingMessage::get_builder()
+                .with_name(messages)
+                .with_publisher("")
+                .with_subject(messages)
+                .with_update(&ArrowTablePublish::None)
+                .with_message(message_builder.clone().build()?.to_record_batch_stream())
+                .build()?,
+        );
+        let _ = message.insert(
+            candle_chat_config_table.get_name().to_string(),
+            ArrowOutgoingMessage::get_builder()
+                .with_name(candle_chat_config_table.get_name())
+                .with_publisher("")
+                .with_subject(candle_chat_config_table.get_name())
+                .with_update(&ArrowTablePublish::None)
+                .with_message(candle_chat_config_table.to_record_batch_stream())
+                .build()?,
+        );
+
+        // Build the chat task
+        #[allow(unused_variables)]
+        let chat_processor = CandleChatProcessor::new_with_pub_sub_for(
+            name,
+            &[ArrowTablePublish::ExtendChunks {
+                table_name: messages.to_string(),
+                col_name: "content".to_string(),
+            }],
+            &[
+                ArrowTableSubscribe::OnUpdateFullTable {
+                    table_name: messages.to_string(),
+                },
+                ArrowTableSubscribe::None,
+                ArrowTableSubscribe::AlwaysFullTable {
+                    table_name: candle_chat_config_table.get_name().to_string(),
+                },
+            ],
+            &[],
+        );
+        #[cfg(all(not(feature = "candle"), feature = "openai_api"))]
+        let chat_processor = OpenAIChatProcessor::new_with_pub_sub_for(
+            name,
+            &[ArrowTablePublish::ExtendChunks {
+                table_name: messages.to_string(),
+                col_name: "content".to_string(),
+            }],
+            &[
+                ArrowTableSubscribe::OnUpdateFullTable {
+                    table_name: messages.to_string(),
+                },
+                ArrowTableSubscribe::None,
+                ArrowTableSubscribe::AlwaysFullTable {
+                    table_name: candle_chat_config_table.get_name().to_string(),
+                },
+            ],
+            &[],
+        );
+        let mut stream = chat_processor.process(
+            message,
+            metrics,
+            Arc::new(Mutex::new(RuntimeEnv::new().with_name("rt"))),
+        )?;
+
+        // Update the chat history with the response
+        let (message_builder, _stream) = message_builder
+            .append_chat_response_sendable_record_batch_stream(
+                &mut stream.remove(messages).unwrap().get_message_own(),
+                1000,
+            )
+            .await?;
+        message_builder.clone().build()
+    }
+
+    /// Run the first query for the chat agent session and return the response
+    pub async fn bench_chat_agent_session_1<'a>(
+        session_stream_state: Arc<RwLock<SessionStreamState>>,
+        chat_agent_session: &ChatAgentSession<'a>,
+        user_content: &str,
+    ) -> Result<Vec<HashMap<String, ArrowIncomingMessage>>> {
+        // Make the system prompt and add the user query
+        let message_builder = ArrowTableBuilder::new()
+            .with_name(chat_agent_session.chat_subscription_name)
+            .insert_system_template_str("You are a helpful assistant.")?
+            .append_new_user_query_str(user_content, "user")?;
+
+        // Build the current message state
+        let incoming_message = ArrowIncomingMessageBuilder::new()
+            .with_name(chat_agent_session.chat_subscription_name)
+            .with_subject(chat_agent_session.chat_task_name)
+            .with_publisher(chat_agent_session.session_context_name)
+            .with_message(message_builder.build()?)
+            .with_update(&ArrowTablePublish::Extend {
+                table_name: chat_agent_session.chat_subscription_name.to_string(),
+            })
+            .build()?;
+        let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
+        incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
+
+        // Run the session
+        let session_stream = SessionStream::new(incoming_message_map, session_stream_state);
+        session_stream.try_collect().await
+    }
+
+    /// Run the second query for the chat agent session and return the response
+    pub async fn bench_chat_agent_session_2<'a>(
+        session_stream_state: Arc<RwLock<SessionStreamState>>,
+        chat_agent_session: &ChatAgentSession<'a>,
+        user_content: &str,
+    ) -> Result<Vec<HashMap<String, ArrowIncomingMessage>>> {
+        // Add a new query to the message history
+        let message_builder = ArrowTableBuilder::new()
+            .with_name(chat_agent_session.chat_subscription_name)
+            .append_new_user_query_str(user_content, "user")?;
+
+        // Build the incoming message state
+        let incoming_message = ArrowIncomingMessageBuilder::new()
+            .with_name(chat_agent_session.chat_subscription_name)
+            .with_subject(chat_agent_session.chat_task_name)
+            .with_publisher(chat_agent_session.session_context_name)
+            .with_message(message_builder.clone().build()?)
+            .with_update(&ArrowTablePublish::Extend {
+                table_name: chat_agent_session.chat_subscription_name.to_string(),
+            })
+            .build()?;
+        let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
+        incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
+
+        // Run the session
+        session_stream_state.try_write().unwrap().set_iter(0);
+        let session_stream = SessionStream::new(incoming_message_map, session_stream_state);
+        session_stream.try_collect().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use parking_lot::RwLock;
+    use phymes_core::{
+        metrics::HashMap,
+        session::session_context::SessionStreamState,
+        table::arrow_table::ArrowTableTrait,
+        task::arrow_message::{ArrowIncomingMessage, ArrowIncomingMessageTrait},
+    };
+
+    use super::*;
+    use test_chat_agent_session::{bench_chat_agent_session_1, bench_chat_agent_session_2};
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_chat_agent_session() -> Result<()> {
@@ -231,42 +409,20 @@ mod tests {
         let session_ctx = chat_agent_session.make_session_context(metrics.clone())?;
         let session_stream_state = Arc::new(RwLock::new(SessionStreamState::new(session_ctx)));
 
-        // ----- Query #1 -----
-
-        // Make the system prompt and add the user query
-        let message_builder = ArrowTableBuilder::new()
-            .with_name(chat_agent_session.chat_subscription_name)
-            .insert_system_template_str("You are a helpful assistant.")?
-            .append_new_user_query_str(
-                "Write a function to count prime numbers up to N.",
-                "user",
-            )?;
-
-        // Build the current message state
-        let incoming_message = ArrowIncomingMessageBuilder::new()
-            .with_name(chat_agent_session.chat_subscription_name)
-            .with_subject(chat_agent_session.chat_task_name)
-            .with_publisher(chat_agent_session.session_context_name)
-            .with_message(message_builder.build()?)
-            .with_update(&ArrowTablePublish::Extend {
-                table_name: chat_agent_session.chat_subscription_name.to_string(),
-            })
-            .build()?;
-        let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
-        incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
-
-        // Run the session
-        let session_stream =
-            SessionStream::new(incoming_message_map, Arc::clone(&session_stream_state));
-
         // Skip actually running the session as it takes too long on the CPU
         if cfg!(any(
             all(not(feature = "candle"), feature = "wsl"),
             all(not(feature = "candle"), feature = "wasip2"),
             feature = "gpu"
         )) {
+            // ----- Query #1 -----
             let mut response: Vec<HashMap<String, ArrowIncomingMessage>> =
-                session_stream.try_collect().await?;
+                bench_chat_agent_session_1(
+                    Arc::clone(&session_stream_state),
+                    &chat_agent_session,
+                    "Write a function to count prime numbers up to N.",
+                )
+                .await?;
 
             // Update the chat history with the response
             let json_data = response
@@ -303,35 +459,13 @@ mod tests {
             assert!(json_data.first().unwrap().get("content").is_some());
 
             // ----- Query #2 -----
-
-            // Add a new query to the message history
-            let message_builder = ArrowTableBuilder::new()
-                .with_name(chat_agent_session.chat_subscription_name)
-                .append_new_user_query_str(
-                    "Please provide an example using the functions.",
-                    "user",
-                )?;
-
-            // Build the incoming message state
-            let incoming_message = ArrowIncomingMessageBuilder::new()
-                .with_name(chat_agent_session.chat_subscription_name)
-                .with_subject(chat_agent_session.chat_task_name)
-                .with_publisher(chat_agent_session.session_context_name)
-                .with_message(message_builder.clone().build()?)
-                .with_update(&ArrowTablePublish::Extend {
-                    table_name: chat_agent_session.chat_subscription_name.to_string(),
-                })
-                .build()?;
-            let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
-            incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
-
-            // Run the session
-            session_stream_state.try_write().unwrap().set_iter(0);
-            let session_stream =
-                SessionStream::new(incoming_message_map, Arc::clone(&session_stream_state));
-
             let mut response: Vec<HashMap<String, ArrowIncomingMessage>> =
-                session_stream.try_collect().await?;
+                bench_chat_agent_session_2(
+                    Arc::clone(&session_stream_state),
+                    &chat_agent_session,
+                    "Please provide an example using the functions.",
+                )
+                .await?;
 
             // Update the chat history with the response
             let json_data = response

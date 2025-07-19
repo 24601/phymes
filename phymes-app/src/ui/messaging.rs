@@ -3,31 +3,46 @@ use dioxus::prelude::*;
 
 // General imports
 use futures::StreamExt;
-use reqwest::{self, header::CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
 use serde_json::{self, Map, Value};
+
+#[cfg(not(feature = "serverless"))]
+use reqwest::{self, header::CONTENT_TYPE};
+
+// Phymes imports
+use phymes_core::table::arrow_table_publish::ArrowTablePublish;
+use phymes_server::handlers::{
+    session_info::{SessionResponse, SessionResponseFormat},
+    sign_in::create_session_name,
+};
 
 const MESSAGES_SUBJECT_NAME: &str = "messages";
 
-// mod imports
-use super::{
-    backend::{create_session_name, GetSessionState, ADDR_BACKEND},
-    messaging_state::{
-        clear_current_message_state, create_timestamp, sync_current_message_content_state,
-        sync_current_message_state, ClearCurrentMessageState, SyncCurrentMessageContentState,
-        SyncCurrentMessageState, CONTENT, INDEX, ROLE, TIMESTAMP,
-    },
-    settings_state::ACTIVE_SESSION_NAME,
-    sign_in_state::{EMAIL, JWT},
-    svg_icons::{assistant_icon_svg, send_icon_svg, user_icon_svg},
+#[cfg(not(feature = "serverless"))]
+use super::backend::ADDR_BACKEND;
+
+#[cfg(feature = "serverless")]
+use bytes::Bytes;
+#[cfg(feature = "serverless")]
+use futures::TryStreamExt;
+#[cfg(feature = "serverless")]
+use phymes_server::server::{
+    serverless_app::{serverless_app, Serverless},
+    serverless_config::ServerlessConfig,
 };
 
-#[derive(Serialize, Deserialize, Debug)]
-struct DioxusMessage {
-    content: String,
-    session_name: String,
-    subject_name: String,
-}
+// mod imports
+use crate::{
+    state::{
+        messaging::{
+            clear_current_message_state, create_timestamp, sync_current_message_content_state,
+            sync_current_message_state, ClearCurrentMessageState, SyncCurrentMessageContentState,
+            SyncCurrentMessageState, CONTENT, INDEX, ROLE, TIMESTAMP,
+        },
+        settings::ACTIVE_SESSION_NAME,
+        sign_in::{EMAIL, JWT},
+    },
+    ui::svg_icons::{assistant_icon_svg, send_icon_svg, user_icon_svg},
+};
 
 /// View for messaging between the user and AI assistant
 #[component]
@@ -42,16 +57,24 @@ pub fn messaging_interface_view() -> Element {
     let sync_current_message_state = use_coroutine_handle::<SyncCurrentMessageState>();
     let _ = use_resource(move || async move {
         clear_current_message_state.send(ClearCurrentMessageState {});
-        let data = GetSessionState {
+        let data = SessionResponse {
             session_name: create_session_name(
                 EMAIL.read().as_str(),
                 ACTIVE_SESSION_NAME.read().as_str(),
             ),
             subject_name: MESSAGES_SUBJECT_NAME.to_string(),
-            format: "json_obj".to_string(),
+            format: SessionResponseFormat::None,
+            publish: ArrowTablePublish::None,
+            content: "".to_string(),
+            metadata: "".to_string(),
+            stream: false,
         };
         let data_serialized = serde_json::to_string(&data).unwrap();
-        let addr = format!("{ADDR_BACKEND}/app/v1/get_state");
+        let route = "/app/v1/get_state";
+
+        #[cfg(not(feature = "serverless"))]
+        let addr = format!("{ADDR_BACKEND}{route}");
+        #[cfg(not(feature = "serverless"))]
         match reqwest::Client::new()
             .post(addr)
             .bearer_auth(JWT().to_string())
@@ -87,6 +110,46 @@ pub fn messaging_interface_view() -> Element {
                 }
             }
             Err(_err) => (), //content.write().push_str(format!("There was a error getting subjects info {err}.").as_str()),
+        }
+
+        #[cfg(feature = "serverless")]
+        let config = ServerlessConfig {
+            route: route.to_string(),
+            basic_auth: None,
+            bearer_auth: Some(JWT().to_string()),
+            data: Some(data_serialized),
+        };
+        #[cfg(feature = "serverless")]
+        let mut serverless = Serverless::new();
+        #[cfg(feature = "serverless")]
+        match serverless_app(config, &mut serverless).await {
+            Ok(response) => {
+                let bytes: Vec<Bytes> = response
+                    .into_body()
+                    .into_data_stream()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                for byte in bytes.iter() {
+                    let json_rows: Vec<Map<String, Value>> =
+                        serde_json::from_slice(byte).unwrap_or_else(|_err| Vec::new());
+                    for row in json_rows.iter() {
+                        if row.get("role").is_some() {
+                            sync_current_message_state.send(SyncCurrentMessageState {
+                                role: row.get("role").unwrap().as_str().unwrap().to_string(),
+                                content: row.get("content").unwrap().as_str().unwrap().to_string(),
+                                timestamp: row
+                                    .get("timestamp")
+                                    .unwrap()
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            Err(_err) => (),
         }
     });
 
@@ -198,20 +261,33 @@ pub fn messaging_interface_footer() -> Element {
                                 timestamp: create_timestamp()
                             });
 
-                            // create the message
-                            let data = DioxusMessage {
-                                content: prompt.to_string(),
-                                session_name: create_session_name(EMAIL.read().as_str(), ACTIVE_SESSION_NAME.read().as_str()),
-                                subject_name: MESSAGES_SUBJECT_NAME.to_string(),
-                            };
-                            prompt.write().clear();
-                            let data_serialized = serde_json::to_string(&data).unwrap();
-                            let addr = format!("{ADDR_BACKEND}/app/v1/chat");
+                            // let the user know that the response is being prepared
                             sync_message.send(SyncCurrentMessageState {
                                 role: "assistant".to_string(),
                                 content: "Preparing response...".to_string(),
                                 timestamp: create_timestamp()
                             });
+
+                            // create the message
+                            let data = SessionResponse {
+                                session_name: create_session_name(
+                                    EMAIL.read().as_str(),
+                                    ACTIVE_SESSION_NAME.read().as_str(),
+                                ),
+                                subject_name: MESSAGES_SUBJECT_NAME.to_string(),
+                                format: SessionResponseFormat::Bytes,
+                                publish: ArrowTablePublish::None,
+                                content: prompt.to_string(),
+                                metadata: "".to_string(),
+                                stream: false,
+                            };
+                            prompt.write().clear();
+                            let data_serialized = serde_json::to_string(&data).unwrap();
+                            let route = "/app/v1/chat";
+
+                            #[cfg(not(feature = "serverless"))]
+                            let addr = format!("{ADDR_BACKEND}{route}");
+                            #[cfg(not(feature = "serverless"))]
                             match reqwest::Client::new()
                                 .post(addr)
                                 .bearer_auth(JWT.to_string())
@@ -230,6 +306,44 @@ pub fn messaging_interface_footer() -> Element {
                                                 m.insert("content".to_string(), format!("Error: {e:?}").into());
                                                 vec![m]
                                             });
+                                        for row in json_rows.iter() {
+                                            sync_message_content.send(SyncCurrentMessageContentState {
+                                                content: row.get("content").unwrap().as_str().unwrap().to_string(),
+                                                replace_last: false
+                                            });
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    sync_message_content.send(SyncCurrentMessageContentState {content: format!("Error: {e:?}"), replace_last: true});
+                                }
+                            }
+
+                            #[cfg(feature = "serverless")]
+                            let config = ServerlessConfig {
+                                route: route.to_string(),
+                                basic_auth: None,
+                                bearer_auth: Some(JWT().to_string()),
+                                data: Some(data_serialized),
+                            };
+                            #[cfg(feature = "serverless")]
+                            let mut serverless = Serverless::new();
+                            #[cfg(feature = "serverless")]
+                            match serverless_app(config, &mut serverless).await {
+                                Ok(response) => {
+                                    sync_message_content.send(SyncCurrentMessageContentState {content: "".to_string(), replace_last: true});
+                                    let bytes: Vec<Bytes> = response
+                                        .into_body()
+                                        .into_data_stream()
+                                        .try_collect()
+                                        .await
+                                        .unwrap();
+                                    for byte in bytes.iter() {
+                                        let json_rows: Vec<Map<String, Value>> = serde_json::from_slice(byte).unwrap_or_else(|e| {
+                                            let mut m = Map::new();
+                                            m.insert("content".to_string(), format!("Error: {e:?}").into());
+                                            vec![m]
+                                        });
                                         for row in json_rows.iter() {
                                             sync_message_content.send(SyncCurrentMessageContentState {
                                                 content: row.get("content").unwrap().as_str().unwrap().to_string(),

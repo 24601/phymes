@@ -147,7 +147,64 @@ curl https://wasmtime.dev/install.sh -sSf | bash
 The front-end application is built using [dioxus](https://dioxuslabs.com) to enable creating web, desktop, and mobile applications using Rust
 
 ```bash
+# Build from source (can sometimes fail)
 cargo install dioxus-cli
+
+# Install using binstall (usually does not fail)
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+cargo update
+cargo binstall dioxus-cli
+```
+
+### Setting up Android Studio
+
+Installation of [Android Studio](https://developer.android.com/studio) is required to run virtual android phone emulations of the applicaiton or to test on a physical android device. Follow the below steps to install Android Studio on Linux.
+
+First, install Linux 64 bit dependencies required to build Android applications
+
+```bash
+# add 32 bit architecture target
+sudo dpkg --add-architecture i386
+
+# add non-standard package repos for libncurses5
+sudo tee -a /etc/apt/sources.list <<EOF
+deb http://archive.ubuntu.com/ubuntu/ focal main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ focal-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ focal-security main restricted universe multiverse
+EOF
+
+# install the dependencies
+sudo apt-get update
+sudo apt-get install libc6:i386 libncurses5:i386 libstdc++6:i386 lib32z1 libbz2-1.0:i386
+sudo apt install default-jre
+sudo apt install default-jdk
+```
+
+Second, install Android Studio. The simplest option is to [download](https://developer.android.com/studio) and untar in a directory of your choice. Then, move the files and folders to an accessible directory.
+
+```bash
+# cd to the directory for android-studio
+mv android-studio /opt/android-studio/
+sudo /opt/android-studio/bin/studio.sh
+```
+
+Third, use Android Studio to emulate a virtual android device by following the [walkthrough](https://github.com/DioxusLabs/dioxus/discussions/3234) under the section "Running the Emulator". Note that during the walkthrough, various packages are installed which require the configuration of permissions and environmental variables to work nicely with Dioxus.
+
+```bash
+# Set the environmental variable
+export JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+export ANDROID_HOME="$HOME/Android/Sdk"
+export NDK_HOME="$ANDROID_HOME/ndk/29.0.13599879"
+export PATH="$PATH:$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools"
+
+# Fix the permission so that Dioxus can run Gradle
+sudo chmod -R 757 ~/Android/Sdk
+```
+
+Finally, you should be able to build the phymes-app for android. Note that the emulator must be running before starting the phymes-app server.
+
+```bash
+dx serve -p phymes-app --platform android
 ```
 
 ### How to compile
@@ -216,7 +273,7 @@ cp -a .cache/hf/. $HOME/.cache/hf/
 # download the model assets manually from HuggingFace
 curl -L -o $HOME/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/model.safetensors  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/model.safetensors?download=true -sSf
 curl -L -o $HOME/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/pytorch_model.bin  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/pytorch_model.bin?download=true -sSf
-curl -L -o $HOME/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/qwen2.5-0.5b-instruct-q4_0.gguf  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_0.gguf?download=true -sSf
+curl -L -o $HOME/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true -sSf
 curl -L -o $HOME/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/smollm2-135m-instruct-q4_k_m.gguf  https://huggingface.co/Segilmez06/SmolLM2-135M-Instruct-Q4_K_M-GGUF/resolve/main/smollm2-135m-instruct-q4_k_m.gguf?download=true -sSf
 curl -L -o $HOME/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf  https://huggingface.co/tensorblock/gte-Qwen2-1.5B-instruct-GGUF/resolve/main/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf?download=true -sSf
 ```
@@ -425,10 +482,10 @@ Running benchmarks are a good way to test the performance of a change. As benchm
 cargo bench
 
 # run phymes-core benchmarks
-cargo bench -p phymes-core
+cargo bench -p phymes-agents
 
 # run benchmark for the add_rows function within the phymes-core crate
-cargo bench -p phymes-core --bench add_rows
+cargo bench -p phymes-agents --bench benchmark_chat_processor
 ```
 
 To set the baseline for your benchmarks, use the --save-baseline flag:
@@ -436,11 +493,11 @@ To set the baseline for your benchmarks, use the --save-baseline flag:
 ```bash
 git checkout main
 
-cargo bench -p phymes-core --bench add_rows -- --save-baseline main
+cargo bench -p phymes-agents --bench benchmark_chat_processor -- --save-baseline main
 
 git checkout feature
 
-cargo bench -p phymes-core --bench add_rows -- --baseline main
+cargo bench -p phymes-agents --bench benchmark_chat_processor -- --baseline main
 ```
 
 ### Running the CI locally
@@ -466,7 +523,7 @@ The `phymes-core`, `phymes-agents`, `phymes-server`, `phymes-app` crates form a 
 First, build the frontend application using dioxus
 
 ```bash
-dx bundle -p phymes-app --release
+dx bundle -p phymes-app --platform web --release
 ```
 
 Second, build the server with the desired features.
@@ -521,9 +578,34 @@ Fourth, launch the `phymes-server` executable
 ./target/release/phymes-server
 ```
 
-### Mobile
+### Mobile (Android)
 
-In progress...
+First, build the frontend application
+```bash
+# for Android
+dx build -p phymes-app --platform android --release
+
+# for iOS
+dx build -p phymes-app --platform ios --release
+```
+
+Second, build the phymes-server application with the desired features. Note that Dioxus
+
+```bash
+# GPU support and Candle token service
+cargo build --package phymes-server --features wsl,gpu,candle --release
+
+# Or OpenAI API
+cargo build --package phymes-server --features wsl --release
+```
+
+Third, launch the `phymes-app` executable on a device emulator or on the physical device.
+
+Fourth, launch the `phymes-server` executable
+
+```bash
+./target/release/phymes-server
+```
 
 ### WASM
 
@@ -541,12 +623,12 @@ wastime --dir=$HOME/.cache phymes-server.wasm --route app/v1/sign_in --basic_aut
 # mock response {"email":"EMAIL","jwt":"JWTTOKEN","session_plans":["Chat","DocChat","ToolChat"]}
 
 # Get information about the different subjects
-wastime --dir=$HOME/.cache phymes-server.wasm curl --route app/v1/subjects_info --bearer_auth JWTTOKEN --data '{"session_name":"myemail@gmail.comChat","subject_name":"","format":""}'
+wastime --dir=$HOME/.cache phymes-server.wasm curl --route app/v1/subjects_info --bearer_auth JWTTOKEN --data '{"session_name":"EMAILChat","subject_name":"","format":"Bytes","publish":"None","content":"","metadata":"","stream":false}'
 
 # Chat request
 # Be sure to replace EMAIL and JWTTOKEN with your actual email and JWT token!
 # Note that the session_name = email + session_plan
-wastime --dir=$HOME/.cache phymes-server.wasm curl --route app/v1/chat --bearer_auth JWTTOKEN --data '{"content": "Write a python function to count prime numbers", "session_name": "EMAILChat", "subject_name": "messages"}'
+wastime --dir=$HOME/.cache phymes-server.wasm curl --route app/v1/chat --bearer_auth JWTTOKEN --data '{"content":"Write a python function to count prime numbers","session_name":"EMAILChat","subject_name":"messages","format":"Bytes","publish":"None","metadata":"","stream":true}'
 ```
 
 ## Deploying with local or remote OpenAI API compatible token service endpoints
@@ -562,20 +644,20 @@ We recommend debugging the application using two terminals: one for `phymes-app`
 In the first terminal:
 
 ```bash
-dx serve -p phymes-app
+dx serve -p phymes-app --platform web
 ```
 
 In the second terminal:
 
 ```bash
 # default log level
-cargo run -p phymes-server --features wsl,gpu
+cargo run -p phymes-server --features wsl,gpu,candle
 
 # only INFO level logs
-RUST_LOG=phymes_server=INFO cargo run -p phymes-server --features wsl,gpu
+RUST_LOG=phymes_server=INFO cargo run -p phymes-server --features wsl,gpu,candle
 
 # debug level logs for phymes-server, phymes-core, and phymes-agents
-RUST_LOG=phymes_server=DEBUG,phymes_core=DEBUG,phymes_agents=DEBUG cargo run -p phymes-server --features wsl,gpu
+RUST_LOG=phymes_server=DEBUG,phymes_core=DEBUG,phymes_agents=DEBUG cargo run -p phymes-server --features wsl,gpu,candle
 ```
 
 <!--- ANCHOR_END: deploying --->

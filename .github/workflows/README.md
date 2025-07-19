@@ -19,7 +19,7 @@ mkdir -p ~/.cache/hf
 cp -a $GITHUB_WORKSPACE/.cache/hf/. ~/.cache/hf/
 curl -L -o ~/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/model.safetensors  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/model.safetensors?download=true -sSf
 curl -L -o ~/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/pytorch_model.bin  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/pytorch_model.bin?download=true -sSf
-curl -L -o ~/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/qwen2.5-0.5b-instruct-q4_0.gguf  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_0.gguf?download=true -sSf
+curl -L -o ~/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true -sSf
 curl -L -o ~/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/smollm2-135m-instruct-q4_k_m.gguf  https://huggingface.co/Segilmez06/SmolLM2-135M-Instruct-Q4_K_M-GGUF/resolve/main/smollm2-135m-instruct-q4_k_m.gguf?download=true -sSf
 curl -L -o ~/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf  https://huggingface.co/tensorblock/gte-Qwen2-1.5B-instruct-GGUF/resolve/main/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf?download=true -sSf
 ```
@@ -51,14 +51,14 @@ cargo test -p phymes-core --features wasip2 --no-default-features --target wasm3
 for file in target/wasm32-wasip2/release/deps/phymes_core-*.wasm; do [ -f "$file" ] && wasmtime "$file"; done
 cargo build -p phymes-core --target wasm32-wasip2 --no-default-features --features wasip2 --release --example addrows
 wasmtime run target/wasm32-wasip2/release/examples/addrows.wasm
-cargo build -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-unknown-unknown
+cargo check -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-unknown-unknown
 cargo test -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-wasip2 --no-run --release
 for file in target/wasm32-wasip2/release/deps/phymes_agents-*.wasm; do [ -f "$file" ] && wasmtime --dir=$HOME/.cache/hf --env=HOME=$HOME "$file"; done
 cargo build --package phymes-agents --target wasm32-wasip2 --no-default-features --features wasip2,candle --release --example chat
 cargo build --package phymes-agents --target wasm32-wasip2 --no-default-features --features wasip2,candle --release --example chatagent
 wasmtime --dir=$HOME/.cache/hf --env=HOME=$HOME target/wasm32-wasip2/release/examples/chatagent.wasm
 wasmtime --dir=$HOME/.cache/hf --env=HOME=$HOME target/wasm32-wasip2/release/examples/chat.wasm --weights-config-file "$HOME/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/config.json" --weights-file "$HOME/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/smollm2-135m-instruct-q4_k_m.gguf" --tokenizer-file "$HOME/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/tokenizer.json" --tokenizer-config-file "$HOME/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/tokenizer_config.json" --candle-asset "SmoLM2-135M-chat"
-cargo build -p phymes-server --no-default-features --features wasip2,candle --target wasm32-unknown-unknown
+cargo check -p phymes-server --no-default-features --features wasip2,candle --target wasm32-unknown-unknown
 cargo test -p phymes-server --no-default-features --features wasip2,candle --target wasm32-wasip2 --no-run --release
 for file in target/wasm32-wasip2/release/deps/phymes_server-*.wasm; do [ -f "$file" ] && wasmtime --dir=$HOME/.cache/hf --env=HOME=$HOME "$file"; done
 cargo build -p phymes-server --no-default-features --features wasip2,candle --target wasm32-wasip2 --release
@@ -68,4 +68,25 @@ cargo doc --document-private-items --no-deps -p phymes-core
 cargo doc --document-private-items --no-deps -p phymes-agents
 cargo doc --document-private-items --no-deps -p phymes-server
 cargo doc --document-private-items --no-deps -p phymes-app
+```
+
+## Benchmarks
+
+The following runs all benchmarks with all CPU, GPU, and WASM features and targets
+
+```bash
+mkdir ~/.cache/metrics
+cargo bench --bench chat -p phymes-agents --no-default-features --features wasip2,gpu,candle -- --sample-size 10
+cargo bench --bench chat -p phymes-agents --no-default-features --features wasip2,candle -- --sample-size 10
+cargo bench --bench chat -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-wasip2 --no-run
+for file in target/wasm32-wasip2/release/deps/chat-*.wasm; do [ -f "$file" ] && wasmtime --dir=$HOME/.cache/hf --dir=$HOME/.cache/metrics --dir=./target/criterion --env=HOME=$HOME "$file" --bench --sample-size 10; done
+cargo bench --bench chatagent -p phymes-agents --no-default-features --features wasip2,gpu,candle -- --sample-size 10
+cargo bench --bench chatagent -p phymes-agents --no-default-features --features wasip2,candle -- --sample-size 10
+cargo bench --bench chatagent -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-wasip2 --no-run
+for file in target/wasm32-wasip2/release/deps/chatagent-*.wasm; do [ -f "$file" ] && wasmtime --dir=$HOME/.cache/hf --dir=$HOME/.cache/metrics --dir=./target/criterion --env=HOME=$HOME "$file" --bench --sample-size 10; done
+cargo bench --bench docrag -p phymes-agents --no-default-features --features wasip2,gpu,candle -- --sample-size 10
+cargo bench --bench docrag -p phymes-agents --no-default-features --features wasip2,candle -- --sample-size 10
+cargo bench --bench docrag -p phymes-agents --no-default-features --features wasip2,candle --target wasm32-wasip2 --no-run
+for file in target/wasm32-wasip2/release/deps/docrag-*.wasm; do [ -f "$file" ] && wasmtime --dir=$HOME/.cache/hf --dir=$HOME/.cache/metrics --dir=./target/criterion --env=HOME=$HOME "$file" --bench --sample-size 10; done
+mv ~/.cache/metrics ./target/criterion/
 ```

@@ -32,26 +32,24 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // Library imports
-use crate::handlers::json_error::{ErrorToResponse, JsonError, serde_json_error_response};
-use crate::handlers::sign_in::CurrentUser;
-use crate::server::server_state::ServerState;
+use crate::{
+    handlers::{
+        json_error::{ErrorToResponse, JsonError, serde_json_error_response},
+        session_info::{SessionResponse, SessionResponseFormat},
+        sign_in::CurrentUser,
+    },
+    server::server_state::ServerState,
+};
 
 // Crate imports
 use phymes_agents::candle_chat::message_history::MessageHistoryBuilderTraitExt;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct DioxusMessage {
-    pub content: String,
-    pub session_name: String,
-    pub subject_name: String,
-}
 
 /// Chat inference endpoint
 #[axum::debug_handler]
 pub async fn session_stream(
     Extension(current_user): Extension<CurrentUser>,
     State(mut state): State<ServerState>,
-    payload: Result<Json<DioxusMessage>, JsonRejection>,
+    payload: Result<Json<SessionResponse>, JsonRejection>,
 ) -> impl IntoResponse {
     // Extract and process the payload
     match payload {
@@ -123,43 +121,95 @@ pub async fn session_stream(
             let session_stream =
                 SessionStream::new(incoming_message_map, Arc::clone(&session_stream_state));
 
-            // Convert the output to bytes
-            let response = session_stream
-                .into_stream()
-                .map_ok(|f| {
-                    f.into_iter()
+            // Run and update the session
+            // DM: we cannot just forward the stream because we want to
+            //  update the session which requires executing the stream first
+            //  i.e., we cannot do something like the following
+
+            //  and then send the response after optionally converting to a
+            //  a byte stream
+
+            // Convert the output to the user specified format
+            // Note: that we cannot write state updates to disk for
+            //   streaming responses since we need to execute the stream first
+            match (&payload.format, payload.stream) {
+                (SessionResponseFormat::Bytes, true) => {
+                    // Convert the output to bytes
+                    let response = session_stream.into_stream().map_ok(move |f| {
+                        f.into_iter()
+                            .filter(|(_k, v)| v.get_name().contains(payload.session_name.as_str()))
+                            .flat_map(|(_k, v)| v.get_message_own().to_bytes().unwrap())
+                            .collect::<Vec<_>>()
+                    });
+
+                    // Send the stream
+                    Body::from_stream(response).into_response()
+                }
+                (SessionResponseFormat::Bytes, false) => {
+                    // Convert the output to bytes
+                    let response: Vec<HashMap<String, ArrowIncomingMessage>> =
+                        session_stream.try_collect().await.unwrap();
+                    let response = response
+                        .into_iter()
+                        .flatten()
                         .filter(|(_k, v)| v.get_name().contains(payload.session_name.as_str()))
-                        .map(|(_k, v)| v)
-                        .collect::<Vec<_>>()
-                })
-                .try_concat()
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|v| v.get_message_own().to_bytes().unwrap())
-                .collect::<Vec<_>>();
+                        .map(|(_k, v)| v.get_message_own().to_json_object().unwrap())
+                        .flat_map(|v| Bytes::from(serde_json::to_string(&v).unwrap()))
+                        .collect::<Vec<_>>();
 
-            // Wrap in a future
-            let stream =
-                futures::stream::iter(response.into_iter().map(Ok::<bytes::Bytes, anyhow::Error>));
+                    // Write the updates to disk
+                    if let Err(e) = state.write_state_by_email(
+                        &format!("{}/.cache", std::env::var("HOME").unwrap_or("".to_string())),
+                        &current_user.email,
+                    ) {
+                        return JsonError::new(format!(
+                            "Failed to write the session stream state {e:?}"
+                        ))
+                        .to_response(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
 
-            // Update the session
-            state.session_contexts.try_write().unwrap().insert(
-                payload.session_name.as_str().to_string(),
-                session_stream_state,
-            );
+                    // Send the stream
+                    Body::from(response).into_response()
+                }
+                (SessionResponseFormat::IPC, true) => {
+                    // Convert the output to IPC
+                    let response = session_stream.into_stream().map_ok(move |f| {
+                        f.into_iter()
+                            .filter(|(_k, v)| v.get_name().contains(payload.session_name.as_str()))
+                            .flat_map(|(_k, v)| v.get_message_own().to_ipc_stream().unwrap())
+                            .collect::<Vec<_>>()
+                    });
 
-            // Write the updates to disk
-            if let Err(e) = state.write_state_by_email(
-                &format!("{}/.cache", std::env::var("HOME").unwrap_or("".to_string())),
-                &current_user.email,
-            ) {
-                return JsonError::new(format!("Failed to write the session stream state {e:?}"))
-                    .to_response(StatusCode::INTERNAL_SERVER_ERROR);
+                    // Send the stream
+                    Body::from_stream(response).into_response()
+                }
+                (SessionResponseFormat::IPC, false) => {
+                    // Convert the output to bytes
+                    let response: Vec<HashMap<String, ArrowIncomingMessage>> =
+                        session_stream.try_collect().await.unwrap();
+                    let response = response
+                        .into_iter()
+                        .flatten()
+                        .filter(|(_k, v)| v.get_name().contains(payload.session_name.as_str()))
+                        .flat_map(|(_k, v)| v.get_message_own().to_ipc_stream().unwrap())
+                        .collect::<Vec<_>>();
+
+                    // Write the updates to disk
+                    if let Err(e) = state.write_state_by_email(
+                        &format!("{}/.cache", std::env::var("HOME").unwrap_or("".to_string())),
+                        &current_user.email,
+                    ) {
+                        return JsonError::new(format!(
+                            "Failed to write the session stream state {e:?}"
+                        ))
+                        .to_response(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+
+                    // Send the stream
+                    Body::from(response).into_response()
+                }
+                _ => unimplemented!(),
             }
-
-            // Send the string stream
-            Body::from_stream(stream).into_response()
         }
         Err(JsonRejection::MissingJsonContentType(_err)) => {
             // Request didn't have `Content-Type: application/json`

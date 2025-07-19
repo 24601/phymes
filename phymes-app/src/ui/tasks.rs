@@ -1,20 +1,39 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
-use reqwest::{self, header::CONTENT_TYPE};
+use phymes_core::table::arrow_table_publish::ArrowTablePublish;
+use phymes_server::handlers::{
+    session_info::{SessionResponse, SessionResponseFormat},
+    sign_in::create_session_name,
+};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
-use crate::ui::{
-    backend::{create_session_name, GetSessionState, ADDR_BACKEND},
-    settings_interface::get_non_duplicated_sorted_subjects,
-    settings_state::ACTIVE_SESSION_NAME,
-    sign_in_state::{EMAIL, JWT},
-    svg_icons::search_icon_svg,
-    tasks_state::{
-        clear_task_info_state, sync_current_task_info_state, ClearTaskInfoState,
-        SyncCurrentTaskInfoState, TASK_PROCESSOR_NAMES, TASK_PUB_OR_SUB, TASK_SUBJECT_NAMES,
-        TASK_TASK_NAMES,
+#[cfg(not(feature = "serverless"))]
+use super::backend::ADDR_BACKEND;
+#[cfg(not(feature = "serverless"))]
+use reqwest::{self, header::CONTENT_TYPE};
+
+#[cfg(feature = "serverless")]
+use bytes::Bytes;
+#[cfg(feature = "serverless")]
+use futures::TryStreamExt;
+#[cfg(feature = "serverless")]
+use phymes_server::server::{
+    serverless_app::{serverless_app, Serverless},
+    serverless_config::ServerlessConfig,
+};
+
+use crate::{
+    state::{
+        settings::ACTIVE_SESSION_NAME,
+        sign_in::{EMAIL, JWT},
+        tasks::{
+            clear_task_info_state, sync_current_task_info_state, ClearTaskInfoState,
+            SyncCurrentTaskInfoState, TASK_PROCESSOR_NAMES, TASK_PUB_OR_SUB, TASK_SUBJECT_NAMES,
+            TASK_TASK_NAMES,
+        },
     },
+    ui::{settings::get_non_duplicated_sorted_subjects, svg_icons::search_icon_svg},
 };
 
 /// Get the distinct processors from the distinct tasks
@@ -52,10 +71,14 @@ pub fn tasks_modal() -> Element {
     use_coroutine(clear_task_info_state);
 
     // `get_session_state` will update itself whenever EMAIL or ACTIVE_SESSION_NAME change
-    let get_session_state: Memo<GetSessionState> = use_memo(move || GetSessionState {
+    let get_session_state: Memo<SessionResponse> = use_memo(move || SessionResponse {
         session_name: create_session_name(EMAIL().as_str(), ACTIVE_SESSION_NAME().as_str()),
         subject_name: "".to_string(),
-        format: "".to_string(),
+        format: SessionResponseFormat::Bytes,
+        publish: ArrowTablePublish::None,
+        content: "".to_string(),
+        metadata: "".to_string(),
+        stream: false,
     });
 
     // Get the active session info for the task view
@@ -64,7 +87,11 @@ pub fn tasks_modal() -> Element {
     let _ = use_resource(move || async move {
         let data_serialized = serde_json::to_string(&get_session_state()).unwrap();
         clear_tasks_info_state.send(ClearTaskInfoState {});
-        let addr = format!("{ADDR_BACKEND}/app/v1/tasks_info");
+        let route = "/app/v1/tasks_info";
+
+        #[cfg(not(feature = "serverless"))]
+        let addr = format!("{ADDR_BACKEND}{route}");
+        #[cfg(not(feature = "serverless"))]
         match reqwest::Client::new()
             .post(addr)
             .bearer_auth(JWT().to_string())
@@ -113,6 +140,60 @@ pub fn tasks_modal() -> Element {
                 }
             }
             Err(_err) => (), //content.write().push_str(format!("There was a error getting tasks info {err}.").as_str()),
+        }
+
+        #[cfg(feature = "serverless")]
+        let config = ServerlessConfig {
+            route: route.to_string(),
+            basic_auth: None,
+            bearer_auth: Some(JWT().to_string()),
+            data: Some(data_serialized),
+        };
+        #[cfg(feature = "serverless")]
+        let mut serverless = Serverless::new();
+        #[cfg(feature = "serverless")]
+        match serverless_app(config, &mut serverless).await {
+            Ok(response) => {
+                let bytes: Vec<Bytes> = response
+                    .into_body()
+                    .into_data_stream()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                for byte in bytes.iter() {
+                    let json_rows: Vec<Map<String, Value>> =
+                        serde_json::from_slice(byte).unwrap_or_else(|_err| Vec::new());
+                    for row in json_rows.iter() {
+                        sync_current_tasks_info_state.send(SyncCurrentTaskInfoState {
+                            task_task_name: row
+                                .get("task_names")
+                                .unwrap()
+                                .as_str()
+                                .unwrap()
+                                .to_string(),
+                            task_processor_name: row
+                                .get("processor_names")
+                                .unwrap()
+                                .as_str()
+                                .unwrap()
+                                .to_string(),
+                            task_subject_name: row
+                                .get("subject_names")
+                                .unwrap()
+                                .as_str()
+                                .unwrap()
+                                .to_string(),
+                            task_pub_or_sub: row
+                                .get("pub_or_sub")
+                                .unwrap()
+                                .as_str()
+                                .unwrap()
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+            Err(_err) => (),
         }
     });
 
