@@ -36,17 +36,18 @@ use super::agent_session_builder::AgentSessionBuilderTrait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-/// Document RAG
+/// Document Retrieval Augmented Generation (RAG) session plan.
 ///
 /// # Supersteps
-/// 1. Embed documents: session -> embed_task (chunk_processor, embed_processor)
-///    ... and Embed queries: session -> embed_task (embed_processor)
 ///
-/// 2. Vector search: -> vs_task (rel_sim_score_processor, sort_score_processor, summary_processor)
-/// 3. Chat: session -> chat_task (chat_processor)
-/// 4. End
+/// 1. Embed documents: session -> embed_task (chunk_processor, embed_processor)
+/// 2. Embed queries: session -> embed_task (embed_processor)
+/// 3. Vector search: -> vs_task (rel_sim_score_processor, sort_score_processor, summary_processor)
+/// 4. Chat: session -> chat_task (chat_processor)
+/// 5. End
 ///
 /// # Notes
+///
 /// * The embedding size must be specified before which is determined by the size of
 ///   the hidden layer of the embedding model
 pub struct DocumentRAGSession<'a> {
@@ -97,7 +98,52 @@ pub struct DocumentRAGSession<'a> {
     pub embed_api_url: Option<&'a str>,
 }
 
-impl DocumentRAGSession<'_> {
+impl Default for DocumentRAGSession<'_> {
+    fn default() -> Self {
+        Self {
+            chat_task_name: "chat_task_1",
+            message_aggregator_task_name: "message_aggregator_task_1",
+            message_aggregator_processor_name: "message_aggregator_1",
+            chat_processor_name: "chat_processor_1",
+            chat_runtime_env_name: "chat_rt_1",
+            embed_query_task_name: "embed_query_task_1",
+            embed_documents_task_name: "embed_documents_task_1",
+            embed_query_processor_name: "embed_query_processor_1",
+            embed_documents_processor_name: "embed_documents_processor_1",
+            document_chunk_task_name: "chunk_documents_task_1",
+            document_chunk_processor_1_name: "chunk_documents_processor_1",
+            embed_documents_runtime_env_name: "embed_documents_rt_1",
+            embed_query_runtime_env_name: "embed_query_rt_1", // "embed_documents_rt_1",
+            vector_search_task_name: "vs_task_1",
+            relative_similarity_processor_name: "rel_sim_processor_1",
+            sort_scores_processor_name: "sort_scores_processor_1",
+            document_chunk_processor_2_name: "chunk_documents_processor_2", //"chunk_documents_processor_1",
+            join_chunks_processor_name: "join_scores_chunks_processor_1",
+            top_k_processor_name: "top_k_processor_1",
+            vector_search_runtime_env_name: "vs_rt_1",
+            session_context_name: "session_context_1",
+            state_messages_table_name: "messages",
+            state_documents_table_name: "documents",
+            state_doc_embed_table_name: "doc_embeddings",
+            state_queries_table_name: "queries",
+            state_q_embed_table_name: "q_embeddings",
+            state_top_k_docs_table_name: "top_k",
+            state_scores_table_name: "tmp_scores",
+            state_scores_chunks_join_table_name: "tmp_scores_chunks_join",
+            embed_length: 384, // Hidden size for BERT
+            chat_api_url: None,
+            embed_api_url: None,
+        }
+    }
+}
+
+impl<'a> DocumentRAGSession<'a> {
+    pub fn new_with_session_name(session_context_name: &'a str) -> Self {
+        DocumentRAGSession {
+            session_context_name,
+            ..Default::default()
+        }
+    }
     pub fn make_messages_table(&self) -> Result<ArrowTable> {
         let role = Field::new("role", DataType::Utf8, false);
         let content = Field::new("content", DataType::Utf8, false);
@@ -413,7 +459,7 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
             #[cfg(feature = "openai_api")]
             processors.push(OpenAIEmbedProcessor::new_with_pub_sub_for(
                 self.embed_query_processor_name,
-                &[ArrowTablePublish::Extend {
+                &[ArrowTablePublish::Replace {
                     table_name: self.state_q_embed_table_name.to_string(),
                 }],
                 &[
@@ -444,7 +490,7 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
             ));
             processors.push(CandleEmbedProcessor::new_with_pub_sub_for(
                 self.embed_query_processor_name,
-                &[ArrowTablePublish::Extend {
+                &[ArrowTablePublish::Replace {
                     table_name: self.state_q_embed_table_name.to_string(),
                 }],
                 &[
@@ -465,7 +511,7 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
                 table_name: self.state_scores_table_name.to_string(),
             }],
             &[
-                ArrowTableSubscribe::OnUpdateFullTable {
+                ArrowTableSubscribe::AlwaysFullTable {
                     table_name: self.state_doc_embed_table_name.to_string(),
                 },
                 ArrowTableSubscribe::OnUpdateFullTable {
@@ -585,23 +631,23 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
             repeat_last_n: 64,
             // All files need to be local for WASM testing
             weights_config_file: Some(format!(
-                "{}/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/config.json",
+                "{}/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/config.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             weights_file: Some(format!(
-                "{}/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/smollm2-135m-instruct-q4_k_m.gguf",
+                "{}/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/qwen2.5-1.5b-instruct-q4_k_m.gguf",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             tokenizer_file: Some(format!(
-                "{}/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/tokenizer.json",
+                "{}/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/tokenizer.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             tokenizer_config_file: Some(format!(
-                "{}/.cache/hf/models--HuggingFaceTB--SmolLM2-135M-Instruct/tokenizer_config.json",
+                "{}/.cache/hf/models--Qwen--Qwen2-0.5B-Instruct/tokenizer_config.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             candle_asset: Some(
-                crate::candle_assets::candle_which::WhichCandleAsset::SmolLM2_135MChat,
+                crate::candle_assets::candle_which::WhichCandleAsset::QwenV2p5_1p5bChat,
             ),
             ..Default::default()
         };
@@ -610,7 +656,7 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
         #[cfg(feature = "hf_hub")]
         {
             candle_chat_config.candle_asset =
-                Some(crate::candle_assets::candle_which::WhichCandleAsset::QwenV2p5_1p5bChat);
+                Some(crate::candle_assets::candle_which::WhichCandleAsset::QwenV2p5_3bChat);
             candle_chat_config.openai_asset = None;
             candle_chat_config.weights_config_file = None;
             candle_chat_config.weights_file = None;
@@ -643,24 +689,45 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
             dimensions: Some(self.embed_length as i32),
             // All files need to be local for WASM testing
             weights_config_file: Some(format!(
-                "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/config.json",
+                "{}/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/config.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             weights_file: Some(format!(
-                "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf",
+                // "{}/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/pytorch_model.bin",
+                "{}/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/all-minilm-l6-v2-q8_0.gguf",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             tokenizer_file: Some(format!(
-                "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/tokenizer.json",
+                "{}/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/tokenizer.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             tokenizer_config_file: Some(format!(
-                "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/tokenizer_config.json",
+                "{}/.cache/hf/models--sentence-transformers--all-MiniLM-L6-v2/tokenizer_config.json",
                 std::env::var("HOME").unwrap_or("".to_string())
             )),
             candle_asset: Some(
-                crate::candle_assets::candle_which::WhichCandleAsset::QwenV2_1p5bEmbed,
+                // crate::candle_assets::candle_which::WhichCandleAsset::BertEmbed,
+                crate::candle_assets::candle_which::WhichCandleAsset::QuantizedBertEmbed,
             ),
+            // weights_config_file: Some(format!(
+            //     "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/config.json",
+            //     std::env::var("HOME").unwrap_or("".to_string())
+            // )),
+            // weights_file: Some(format!(
+            //     "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/gte-Qwen2-1.5B-instruct-Q4_K_M.gguf",
+            //     std::env::var("HOME").unwrap_or("".to_string())
+            // )),
+            // tokenizer_file: Some(format!(
+            //     "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/tokenizer.json",
+            //     std::env::var("HOME").unwrap_or("".to_string())
+            // )),
+            // tokenizer_config_file: Some(format!(
+            //     "{}/.cache/hf/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct/tokenizer_config.json",
+            //     std::env::var("HOME").unwrap_or("".to_string())
+            // )),
+            // candle_asset: Some(
+            //     crate::candle_assets::candle_which::WhichCandleAsset::QwenV2_1p5bEmbed,
+            // ),
             ..Default::default()
         };
 
@@ -671,6 +738,8 @@ impl AgentSessionBuilderTrait for DocumentRAGSession<'_> {
             candle_embed_config.weights_file = None;
             candle_embed_config.tokenizer_file = None;
             candle_embed_config.tokenizer_config_file = None;
+            candle_embed_config.candle_asset =
+                Some(crate::candle_assets::candle_which::WhichCandleAsset::QwenV2_1p5bEmbed);
         }
 
         // Add openAI_api if available
@@ -833,7 +902,6 @@ pub mod test_doc_rag_session {
     use super::*;
     use crate::candle_chat::message_history::MessageHistoryBuilderTraitExt;
     use arrow::array::{ArrayRef, RecordBatch, StringArray};
-    use futures::TryStreamExt;
     use parking_lot::RwLock;
     use phymes_core::{
         metrics::HashMap,
@@ -847,13 +915,12 @@ pub mod test_doc_rag_session {
         },
     };
 
-    pub async fn bench_doc_rag_session<'a>(
+    pub fn bench_doc_rag_session_docs<'a>(
         session_stream_state: Arc<RwLock<SessionStreamState>>,
         doc_rag_session: &DocumentRAGSession<'a>,
-        user_query: &str,
         document_texts: &[&str],
         document_ids: &[&str],
-    ) -> Result<Vec<HashMap<String, ArrowIncomingMessage>>> {
+    ) -> SessionStream {
         // Create the document message
         let document_texts_arr: ArrayRef = Arc::new(StringArray::from(document_texts.to_vec()));
         let document_ids_arr: ArrayRef = Arc::new(StringArray::from(document_ids.to_vec()));
@@ -868,11 +935,14 @@ pub mod test_doc_rag_session {
             ("chunk_id", chunk_ids_arr),
             ("document_id", document_ids_arr),
             ("text", document_texts_arr),
-        ])?;
+        ])
+        .unwrap();
         let table = ArrowTableBuilder::new()
             .with_name(doc_rag_session.state_documents_table_name)
-            .with_record_batches(vec![batch])?
-            .build()?;
+            .with_record_batches(vec![batch])
+            .unwrap()
+            .build()
+            .unwrap();
 
         let incoming_message = ArrowIncomingMessageBuilder::new()
             .with_name(doc_rag_session.state_documents_table_name)
@@ -882,13 +952,23 @@ pub mod test_doc_rag_session {
             .with_update(&ArrowTablePublish::Extend {
                 table_name: doc_rag_session.state_documents_table_name.to_string(),
             })
-            .build()?;
+            .build()
+            .unwrap();
         let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
         incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
 
+        // Run the session
+        SessionStream::new(incoming_message_map, session_stream_state)
+    }
+
+    pub fn bench_doc_rag_session_query<'a>(
+        session_stream_state: Arc<RwLock<SessionStreamState>>,
+        doc_rag_session: &DocumentRAGSession<'a>,
+        user_query: &str,
+    ) -> SessionStream {
         // Create the query message
         let mut query_vec = Vec::new();
-        if cfg!(feature = "candle") {
+        if cfg!(feature = "hf_hub") {
             // DM: note that the prompt for the query is specific to Qwen!
             let query_embed_str = format!(
                 "{}{}",
@@ -904,49 +984,57 @@ pub mod test_doc_rag_session {
         let query_id_arr: ArrayRef = Arc::new(StringArray::from(query_ids_vec));
 
         let batch =
-            RecordBatch::try_from_iter(vec![("query_id", query_id_arr), ("text", query_arr)])?;
+            RecordBatch::try_from_iter(vec![("query_id", query_id_arr), ("text", query_arr)])
+                .unwrap();
         let table = ArrowTableBuilder::new()
             .with_name(doc_rag_session.state_queries_table_name)
-            .with_record_batches(vec![batch])?
-            .build()?;
+            .with_record_batches(vec![batch])
+            .unwrap()
+            .build()
+            .unwrap();
 
         let incoming_message = ArrowIncomingMessageBuilder::new()
             .with_name(doc_rag_session.state_queries_table_name)
             .with_subject(doc_rag_session.state_queries_table_name)
             .with_publisher(doc_rag_session.session_context_name)
             .with_message(table)
-            .with_update(&ArrowTablePublish::Extend {
+            .with_update(&ArrowTablePublish::Replace {
                 table_name: doc_rag_session.state_queries_table_name.to_string(),
             })
-            .build()?;
+            .build()
+            .unwrap();
+        let mut incoming_message_map = HashMap::<String, ArrowIncomingMessage>::new();
         incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
 
         // Make the system prompt and add the user query
         let message_builder = ArrowTableBuilder::new()
             .with_name(doc_rag_session.state_messages_table_name)
-            .insert_system_template_str("You are a helpful assistant.")?
-            .append_new_user_query_str(user_query, "user")?;
+            // .insert_system_template_str("You are a helpful assistant.").unwrap()
+            .append_new_user_query_str(user_query, "user")
+            .unwrap();
 
         // Build the current message state
         let incoming_message = ArrowIncomingMessageBuilder::new()
             .with_name(doc_rag_session.message_aggregator_task_name)
             .with_subject(doc_rag_session.message_aggregator_task_name)
             .with_publisher(doc_rag_session.session_context_name)
-            .with_message(message_builder.clone().build()?)
+            .with_message(message_builder.clone().build().unwrap())
             .with_update(&ArrowTablePublish::Extend {
                 table_name: doc_rag_session.message_aggregator_task_name.to_string(),
             })
-            .build()?;
+            .build()
+            .unwrap();
         incoming_message_map.insert(incoming_message.get_name().to_string(), incoming_message);
 
         // Run the session
-        let session_stream = SessionStream::new(incoming_message_map, session_stream_state);
-        session_stream.try_collect().await
+        session_stream_state.try_write().unwrap().set_iter(0);
+        SessionStream::new(incoming_message_map, session_stream_state)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use futures::TryStreamExt;
     use parking_lot::RwLock;
     use phymes_core::{
         metrics::HashMap,
@@ -956,7 +1044,7 @@ mod tests {
     };
 
     use super::*;
-    use test_doc_rag_session::bench_doc_rag_session;
+    use test_doc_rag_session::{bench_doc_rag_session_docs, bench_doc_rag_session_query};
 
     #[tokio::test]
     async fn test_doc_rag_session() -> Result<()> {
@@ -964,44 +1052,10 @@ mod tests {
         let metrics = ArrowTaskMetricsSet::new();
 
         // initialize the session
-        let mut doc_rag_session = DocumentRAGSession {
-            // Chat tasks
-            chat_task_name: "chat_task_1",
-            message_aggregator_task_name: "message_aggregator_task_1",
-            message_aggregator_processor_name: "message_aggregator_processor_1",
-            chat_processor_name: "chat_processor_1",
-            chat_runtime_env_name: "chat_rt_1",
-            // Embed tasks
-            embed_query_task_name: "embed_query_task_1",
-            embed_documents_task_name: "embed_documents_task_1",
-            embed_query_processor_name: "embed_query_processor_1",
-            embed_documents_processor_name: "embed_documents_processor_1",
-            document_chunk_task_name: "chunk_documents_task_1",
-            document_chunk_processor_1_name: "chunk_documents_processor_1",
-            embed_documents_runtime_env_name: "embed_documents_rt_1",
-            embed_query_runtime_env_name: "embed_query_rt_1", // "embed_documents_rt_1",
-            // Vector search tasks
-            vector_search_task_name: "vs_task_1",
-            relative_similarity_processor_name: "rel_sim_processor_1",
-            sort_scores_processor_name: "sort_scores_processor_1",
-            document_chunk_processor_2_name: "chunk_documents_processor_2", //"chunk_documents_processor_1",
-            join_chunks_processor_name: "join_scores_chunks_processor_1",
-            top_k_processor_name: "top_k_processor_1",
-            vector_search_runtime_env_name: "vs_rt_1",
-            // Session and state
-            session_context_name: "session_1",
-            state_messages_table_name: "messages",
-            state_documents_table_name: "documents",
-            state_doc_embed_table_name: "doc_embeddings",
-            state_queries_table_name: "queries",
-            state_q_embed_table_name: "q_embeddings",
-            state_top_k_docs_table_name: "top_k",
-            state_scores_table_name: "tmp_scores",
-            state_scores_chunks_join_table_name: "tmp_scores_chunks_join",
-            embed_length: 1536, // Hidden size for GTE Qwen2 1.5B
-            chat_api_url: None,
-            embed_api_url: None,
-        };
+        let mut doc_rag_session = DocumentRAGSession::default();
+        if cfg!(feature = "hf_hub") {
+            doc_rag_session.embed_length = 1536; // Hidden size for GTE Qwen2 1.5B
+        }
         if cfg!(not(feature = "candle")) {
             doc_rag_session.embed_length = 384; // Smallest dimension for Llama
             doc_rag_session.chat_api_url = Some("http://0.0.0.0:8000/v1");
@@ -1027,14 +1081,22 @@ mod tests {
             all(not(feature = "candle"), feature = "wasip2"),
             feature = "gpu"
         )) {
-            let mut response: Vec<HashMap<String, ArrowIncomingMessage>> = bench_doc_rag_session(
-                session_stream_state,
+            // ----- Query #1 -----
+            // Embed the documents
+            let session_stream = bench_doc_rag_session_docs(
+                Arc::clone(&session_stream_state),
                 &doc_rag_session,
-                user_query,
                 document_texts,
                 document_ids,
-            )
-            .await?;
+            );
+            let _response: Vec<HashMap<String, ArrowIncomingMessage>> =
+                session_stream.try_collect().await?;
+
+            // Embed the query and invoke a response
+            let session_stream =
+                bench_doc_rag_session_query(session_stream_state, &doc_rag_session, user_query);
+            let mut response: Vec<HashMap<String, ArrowIncomingMessage>> =
+                session_stream.try_collect().await?;
 
             // Update the chat history with the response
             let json_data = response
@@ -1096,6 +1158,9 @@ mod tests {
 
             assert_eq!(json_data.first().unwrap().get("role").unwrap(), "assistant");
             assert!(json_data.first().unwrap().get("content").is_some());
+
+            // ----- Query #2 -----
+            // Embed the next query and invoke another response
         }
 
         Ok(())

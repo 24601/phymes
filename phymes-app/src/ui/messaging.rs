@@ -58,12 +58,13 @@ pub fn messaging_interface_view() -> Element {
     let _ = use_resource(move || async move {
         clear_current_message_state.send(ClearCurrentMessageState {});
         let data = SessionResponse {
+            session_plan: ACTIVE_SESSION_NAME.read().to_string(),
             session_name: create_session_name(
                 EMAIL.read().as_str(),
                 ACTIVE_SESSION_NAME.read().as_str(),
             ),
             subject_name: MESSAGES_SUBJECT_NAME.to_string(),
-            format: SessionResponseFormat::None,
+            format: SessionResponseFormat::Bytes,
             publish: ArrowTablePublish::None,
             content: "".to_string(),
             metadata: "".to_string(),
@@ -270,6 +271,7 @@ pub fn messaging_interface_footer() -> Element {
 
                             // create the message
                             let data = SessionResponse {
+                                session_plan: ACTIVE_SESSION_NAME.read().to_string(),
                                 session_name: create_session_name(
                                     EMAIL.read().as_str(),
                                     ACTIVE_SESSION_NAME.read().as_str(),
